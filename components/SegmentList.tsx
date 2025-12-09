@@ -27,14 +27,9 @@ const SegmentList: React.FC<SegmentListProps> = ({
 
   return (
     <div className="w-full space-y-3">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-          <FileAudio className="w-5 h-5 text-indigo-600" />
-          Partes Geradas ({segments.length})
-        </h3>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+      {/* Header removed from here as it is handled in parent layout for cleaner grid structure */}
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-3 max-h-[500px] lg:max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
         {segments.map((segment) => {
           const isPlaying = currentlyPlayingId === segment.id;
           
@@ -49,26 +44,27 @@ const SegmentList: React.FC<SegmentListProps> = ({
                 }
               `}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 overflow-hidden">
                 <button
                   onClick={() => isPlaying ? onPause() : onPlay(segment.id)}
                   className={`
-                    w-10 h-10 rounded-full flex items-center justify-center transition-colors
+                    w-12 h-12 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors shrink-0
                     ${isPlaying 
                       ? 'bg-indigo-600 text-white' 
                       : 'bg-slate-100 text-slate-600 group-hover:bg-indigo-100 group-hover:text-indigo-600'
                     }
                   `}
+                  aria-label={isPlaying ? "Pausar" : "Reproduzir"}
                 >
                   {isPlaying ? (
-                    <Pause className="w-4 h-4 fill-current" />
+                    <Pause className="w-5 h-5 sm:w-4 sm:h-4 fill-current" />
                   ) : (
-                    <Play className="w-4 h-4 fill-current ml-0.5" />
+                    <Play className="w-5 h-5 sm:w-4 sm:h-4 fill-current ml-0.5" />
                   )}
                 </button>
                 
-                <div>
-                  <p className="text-sm font-medium text-slate-800">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-800 truncate">
                     {segment.fileName}
                   </p>
                   <p className="text-xs text-slate-500 font-mono">
@@ -80,10 +76,11 @@ const SegmentList: React.FC<SegmentListProps> = ({
               <a
                 href={URL.createObjectURL(segment.blob)}
                 download={segment.fileName}
-                className="p-2 text-slate-400 hover:text-indigo-600 transition-colors"
+                className="p-3 sm:p-2 text-slate-400 hover:text-indigo-600 transition-colors"
                 title="Baixar esta parte"
+                aria-label="Download"
               >
-                <Download className="w-5 h-5" />
+                <Download className="w-6 h-6 sm:w-5 sm:h-5" />
               </a>
             </div>
           );

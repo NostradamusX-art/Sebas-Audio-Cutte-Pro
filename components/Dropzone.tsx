@@ -51,7 +51,8 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
           : 'border-slate-300 bg-white hover:border-indigo-400 hover:bg-slate-50'
         }
         ${isProcessing ? 'pointer-events-none opacity-80' : ''}
-        flex flex-col items-center justify-center p-12 text-center h-64
+        flex flex-col items-center justify-center text-center 
+        h-56 sm:h-72 p-6 sm:p-12
       `}
     >
       <input
@@ -63,23 +64,23 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
         disabled={isProcessing}
       />
       
-      <div className="z-10 flex flex-col items-center gap-4">
+      <div className="z-10 flex flex-col items-center gap-3 sm:gap-4">
         <div className={`
-          p-4 rounded-full transition-colors duration-300
+          p-3 sm:p-4 rounded-full transition-colors duration-300
           ${isDragOver ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-500'}
         `}>
           {isProcessing ? (
-            <Loader2 className="w-8 h-8 animate-spin" />
+            <Loader2 className="w-6 h-6 sm:w-8 sm:h-8 animate-spin" />
           ) : (
-            <Upload className="w-8 h-8" />
+            <Upload className="w-6 h-6 sm:w-8 sm:h-8" />
           )}
         </div>
         
         <div>
-          <h3 className="text-lg font-semibold text-slate-900">
+          <h3 className="text-base sm:text-lg font-semibold text-slate-900">
             {isProcessing ? 'Processando áudio...' : 'Carregar arquivo de música'}
           </h3>
-          <p className="text-sm text-slate-500 mt-1 max-w-xs mx-auto">
+          <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xs mx-auto">
             {isProcessing 
               ? 'Isso pode levar alguns segundos dependendo do tamanho.' 
               : 'Arraste e solte ou clique para selecionar (MP3, WAV, AAC)'
@@ -89,7 +90,7 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
       </div>
 
       {/* Background decoration */}
-      <Music className="absolute -bottom-8 -right-8 w-40 h-40 text-slate-100 -rotate-12 pointer-events-none" />
+      <Music className="absolute -bottom-6 -right-6 sm:-bottom-8 sm:-right-8 w-28 h-28 sm:w-40 sm:h-40 text-slate-100 -rotate-12 pointer-events-none" />
     </div>
   );
 };
