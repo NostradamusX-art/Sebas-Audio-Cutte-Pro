@@ -153,9 +153,13 @@ const App: React.FC = () => {
         {/* Header */}
         <div className="text-center space-y-5">
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <div className="bg-indigo-600 p-3 rounded-xl shadow-lg shadow-indigo-200">
+            <button 
+              onClick={handleReset}
+              className="bg-indigo-600 p-3 rounded-xl shadow-lg shadow-indigo-200 cursor-pointer hover:bg-indigo-700 hover:scale-105 transition-all duration-200"
+              title="Voltar ao início"
+            >
               <Scissors className="w-8 h-8 text-white" />
-            </div>
+            </button>
             <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight text-center">
               Sebas Audio Cutter <span className="text-indigo-600">Pro</span>
             </h1>
