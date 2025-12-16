@@ -1,12 +1,10 @@
-// @ts-ignore
-import * as lamejs from 'lamejs';
 
 /**
  * Global AudioContext instance to avoid creating too many contexts.
  */
 let sharedAudioContext: AudioContext | null = null;
 
-function getAudioContext(): AudioContext {
+export function getAudioContext(): AudioContext {
   if (!sharedAudioContext) {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     sharedAudioContext = new AudioContextClass();
@@ -67,7 +65,13 @@ export function audioBufferToMp3(buffer: AudioBuffer): Blob {
     return result;
   };
 
-  const mp3encoder = new lamejs.Mp3Encoder(channels, sampleRate, 128); // 128kbps
+  const lamejs = (window as any).lamejs;
+  if (!lamejs) {
+    console.error("lamejs not found in window");
+    throw new Error("Bibliotecas de áudio não carregadas. Por favor recarregue a página.");
+  }
+
+  const mp3encoder = new lamejs.Mp3Encoder(channels, sampleRate, 128); // 128kbps default, implies variable roughly
   const samplesLeftInt16 = convertBuffer(samplesLeft);
   const samplesRightInt16 = samplesRight ? convertBuffer(samplesRight) : undefined;
 
@@ -203,37 +207,88 @@ export function mergeBuffers(buffers: AudioBuffer[]): AudioBuffer {
   return result;
 }
 
+// ---------------- NEW FUNCTIONS ----------------
+
+/**
+ * Format seconds to MM:SS string.
+ */
+export function formatTime(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Slices an AudioBuffer into chunks of specific duration.
+ */
+export function sliceAudioBuffer(buffer: AudioBuffer, segmentDuration: number): AudioBuffer[] {
+  const audioContext = getAudioContext();
+  const channels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const len = buffer.length;
+  const segmentLen = Math.floor(segmentDuration * sampleRate);
+  
+  const chunks: AudioBuffer[] = [];
+  
+  // Fade duration (10ms) to prevent clicks at cut points
+  const fadeLen = Math.floor(sampleRate * 0.01); 
+
+  for (let i = 0; i < len; i += segmentLen) {
+    const end = Math.min(i + segmentLen, len);
+    const chunkLen = end - i;
+    
+    // Ignore extremely short end chunks (< 0.1s)
+    if (chunkLen < sampleRate * 0.1) continue;
+
+    const chunkBuffer = audioContext.createBuffer(channels, chunkLen, sampleRate);
+    
+    for (let c = 0; c < channels; c++) {
+      const channelData = buffer.getChannelData(c);
+      const chunkData = chunkBuffer.getChannelData(c);
+      const subArray = channelData.subarray(i, end);
+      chunkData.set(subArray);
+
+      // Apply fade out/in to ends to prevent clicks
+      // Fade In
+      for (let j = 0; j < fadeLen && j < chunkLen; j++) {
+        chunkData[j] *= (j / fadeLen);
+      }
+      // Fade Out
+      for (let j = 0; j < fadeLen && j < chunkLen; j++) {
+        chunkData[chunkLen - 1 - j] *= (j / fadeLen);
+      }
+    }
+    
+    chunks.push(chunkBuffer);
+  }
+  
+  return chunks;
+}
+
 /**
  * Analyzes the AudioBuffer and removes silent sections.
- * Uses a Bandpass filter to isolate vocals before detection.
  */
 export async function removeSilence(
   buffer: AudioBuffer,
-  threshold: number = 0.02, // Slightly higher threshold for filtered audio
+  threshold: number = 0.02, 
   minSilenceDuration: number = 0.4 
 ): Promise<AudioBuffer[]> {
   const audioContext = getAudioContext();
   const sampleRate = buffer.sampleRate;
   const numSamples = buffer.length;
 
-  // 1. Voice Isolation (Bandpass Filter)
-  // We use OfflineAudioContext to render a filtered version just for analysis
   const offlineCtx = new OfflineAudioContext(1, numSamples, sampleRate);
   const source = offlineCtx.createBufferSource();
   source.buffer = buffer;
 
-  // Highpass at 200Hz to remove rumble/bass
   const highpass = offlineCtx.createBiquadFilter();
   highpass.type = 'highpass';
   highpass.frequency.value = 200;
 
-  // Lowpass at 3500Hz to remove high frequency noise/hiss
   const lowpass = offlineCtx.createBiquadFilter();
   lowpass.type = 'lowpass';
   lowpass.frequency.value = 3500;
 
-  // Connect graph
-  // Note: we mix down to mono for analysis
   source.connect(highpass);
   highpass.connect(lowpass);
   lowpass.connect(offlineCtx.destination);
@@ -242,118 +297,441 @@ export async function removeSilence(
   const filteredBuffer = await offlineCtx.startRendering();
   const analysisData = filteredBuffer.getChannelData(0);
 
-  // 2. Analysis using the filtered data
-  const windowSize = Math.floor(sampleRate * 0.05); // 50ms windows
+  const windowSize = Math.floor(sampleRate * 0.05); 
   const regionsToKeep: { start: number; end: number }[] = [];
   
   let isSpeaking = false;
-  let startParams = 0;
-  let silenceStart = 0;
+  let speechStart = 0;
+  let silenceDuration = 0;
 
   for (let i = 0; i < numSamples; i += windowSize) {
     let sum = 0;
     const end = Math.min(i + windowSize, numSamples);
     
-    // Calculate RMS on the filtered (vocal only) data
     for (let j = i; j < end; j++) {
-      sum += analysisData[j] * analysisData[j];
+      sum += Math.abs(analysisData[j]);
     }
-    const rms = Math.sqrt(sum / (end - i));
-
-    if (rms > threshold) {
-      if (!isSpeaking) {
-        isSpeaking = true;
-        // Backtrack slightly to catch the breath/start of attack
-        startParams = Math.max(0, i - sampleRate * 0.25); 
-      }
-      silenceStart = 0;
-    } else {
-      if (isSpeaking) {
-        if (silenceStart === 0) {
-          silenceStart = i;
-        } else if ((i - silenceStart) / sampleRate > minSilenceDuration) {
-          isSpeaking = false;
-          // Add release trail
-          regionsToKeep.push({ 
-            start: startParams, 
-            end: Math.min(numSamples, silenceStart + sampleRate * 0.2) 
-          });
+    const avg = sum / (end - i);
+    
+    if (avg > threshold) {
+        if (!isSpeaking) {
+            isSpeaking = true;
+            speechStart = i;
         }
-      }
+        silenceDuration = 0;
+    } else {
+        if (isSpeaking) {
+            silenceDuration += (end - i) / sampleRate;
+            if (silenceDuration > minSilenceDuration) {
+                isSpeaking = false;
+                regionsToKeep.push({ start: speechStart, end: i });
+            }
+        }
     }
   }
 
-  if (isSpeaking || silenceStart > 0) {
-     regionsToKeep.push({ 
-      start: startParams, 
-      end: numSamples 
-    });
+  // If ended while speaking
+  if (isSpeaking) {
+    regionsToKeep.push({ start: speechStart, end: numSamples });
   }
 
-  // If no regions found, maybe threshold was too high, return original as one chunk
-  if (regionsToKeep.length === 0) {
-    return [buffer];
-  }
-
-  // 3. Extract segments from Original Buffer (High Quality) based on analysis
-  const outputBuffers: AudioBuffer[] = [];
-  const channels = buffer.numberOfChannels;
-
+  // Extract real audio from original buffer
+  const resultBuffers: AudioBuffer[] = [];
+  
   for (const region of regionsToKeep) {
-    const length = region.end - region.start;
-    if (length < 1000) continue; // Skip extremely tiny clips
-
-    const newBuffer = audioContext.createBuffer(channels, length, sampleRate);
-
-    for (let c = 0; c < channels; c++) {
-      const inputData = buffer.getChannelData(c);
-      const outputData = newBuffer.getChannelData(c);
-      // Copy the specific region
-      outputData.set(inputData.slice(region.start, region.end), 0);
-    }
-    outputBuffers.push(newBuffer);
+     const len = region.end - region.start;
+     if (len < sampleRate * 0.1) continue; // Skip very short
+     
+     const newBuf = audioContext.createBuffer(buffer.numberOfChannels, len, sampleRate);
+     for (let c = 0; c < buffer.numberOfChannels; c++) {
+         const chanIn = buffer.getChannelData(c);
+         const chanOut = newBuf.getChannelData(c);
+         chanOut.set(chanIn.subarray(region.start, region.end));
+     }
+     resultBuffers.push(newBuf);
   }
-
-  return outputBuffers;
+  
+  return resultBuffers;
 }
 
 /**
- * Slices an AudioBuffer into multiple smaller AudioBuffers of a specific duration.
+ * Trims silence/hiss from start and end of buffer using RMS Energy detection.
+ * Includes micro-fades to prevent clicks.
  */
-export function sliceAudioBuffer(
-  buffer: AudioBuffer,
-  segmentDuration: number
-): AudioBuffer[] {
-  const audioContext = getAudioContext();
-  const channels = buffer.numberOfChannels;
-  const rate = buffer.sampleRate;
-  const length = buffer.length;
-  const segmentLength = Math.floor(rate * segmentDuration);
-  const segments: AudioBuffer[] = [];
+export function trimAudio(buffer: AudioBuffer, threshold: number = 0.015): AudioBuffer {
+  const numChannels = buffer.numberOfChannels;
+  const len = buffer.length;
+  const sampleRate = buffer.sampleRate;
+  
+  // Use a window to calculate average energy (RMS-like) to ignore sporadic noise/hiss
+  // 50ms window size is standard for envelope detection
+  const windowSize = Math.floor(sampleRate * 0.05); 
+  let start = 0;
+  let end = len;
 
-  for (let offset = 0; offset < length; offset += segmentLength) {
-    // Determine the length of this specific segment (last one might be shorter)
-    const currentSegmentLength = Math.min(segmentLength, length - offset);
+  // 1. Find Start (Attack)
+  // We scan in windows. If the average amplitude of a window is > threshold, 
+  // that's where the audio likely starts.
+  for (let i = 0; i < len; i += windowSize) {
+    let sum = 0;
+    let count = 0;
+    const limit = Math.min(i + windowSize, len);
     
-    // Create a new buffer for this segment
-    const newBuffer = audioContext.createBuffer(channels, currentSegmentLength, rate);
-
-    // Copy data for each channel
-    for (let i = 0; i < channels; i++) {
-      const channelData = buffer.getChannelData(i);
-      // Slice the original channel data
-      const segmentData = channelData.slice(offset, offset + currentSegmentLength);
-      newBuffer.copyToChannel(segmentData, i);
+    // Sum amplitude across all channels for this window
+    for (let j = i; j < limit; j++) {
+         for (let c = 0; c < numChannels; c++) {
+             sum += Math.abs(buffer.getChannelData(c)[j]);
+             count++;
+         }
     }
-
-    segments.push(newBuffer);
+    
+    const avg = sum / count;
+    
+    // Found significant signal
+    if (avg > threshold) {
+        // Backtrack one window to ensure we catch the initial transient breath/attack
+        start = Math.max(0, i - windowSize); 
+        break;
+    }
   }
 
-  return segments;
+  // 2. Find End (Decay)
+  // Scan backwards
+  for (let i = len; i > 0; i -= windowSize) {
+    let sum = 0;
+    let count = 0;
+    const startWindow = Math.max(0, i - windowSize);
+    
+    for (let j = startWindow; j < i; j++) {
+        for (let c = 0; c < numChannels; c++) {
+             sum += Math.abs(buffer.getChannelData(c)[j]);
+             count++;
+         }
+    }
+
+    const avg = sum / count;
+    
+    if (avg > threshold) {
+        // Add a bit of tail (one window) to avoid cutting reverb tails too abruptly
+        end = Math.min(len, i + windowSize);
+        break;
+    }
+  }
+
+  // If silent or signal too low throughout
+  if (start >= end) {
+      return buffer; 
+  }
+
+  const newLen = end - start;
+  const audioContext = getAudioContext();
+  const newBuffer = audioContext.createBuffer(numChannels, newLen, sampleRate);
+
+  // 3. Create new buffer and Apply Fade In/Out
+  const fadeDuration = 0.02; // 20ms fade to prevent clicks
+  const fadeSamples = Math.floor(sampleRate * fadeDuration);
+
+  for (let c = 0; c < numChannels; c++) {
+     const originalData = buffer.getChannelData(c);
+     const newData = newBuffer.getChannelData(c);
+     
+     // Copy data
+     newData.set(originalData.subarray(start, end));
+     
+     // Apply Fade In
+     for (let i = 0; i < fadeSamples && i < newLen; i++) {
+         newData[i] *= (i / fadeSamples);
+     }
+     
+     // Apply Fade Out
+     for (let i = 0; i < fadeSamples && i < newLen; i++) {
+         const index = newLen - 1 - i;
+         newData[index] *= (i / fadeSamples);
+     }
+  }
+
+  return newBuffer;
 }
 
-export function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
+
+// ---------------- MASTERING UTILS ----------------
+
+export type MasteringPreset = 'music' | 'podcast' | 'narration';
+
+export interface MasteringOptions {
+  preset: MasteringPreset;
+  enhanceLevel: number; // 0-1
+  denoiseLevel: number; // 0-1
+  sibilanceLevel: number; // 0-1 (De-esser)
+  roomTreatmentLevel: number; // 0-1 (De-box/De-reverb simulation)
+  reverbLevel?: number; // 0-1 (Add Echo/Space) - Optional
+}
+
+/**
+ * Creates a synthetic Impulse Response for the ConvolverNode (Reverb)
+ */
+function createReverbImpulse(context: BaseAudioContext, duration: number = 2.0, decay: number = 2.0): AudioBuffer {
+    const rate = context.sampleRate;
+    const length = rate * duration;
+    const impulse = context.createBuffer(2, length, rate);
+    const left = impulse.getChannelData(0);
+    const right = impulse.getChannelData(1);
+
+    for (let i = 0; i < length; i++) {
+        // White noise
+        const n = Math.random() * 2 - 1;
+        // Exponential decay
+        const envelope = Math.pow(1 - i / length, decay);
+        
+        left[i] = n * envelope;
+        right[i] = n * envelope;
+    }
+    return impulse;
+}
+
+function createMasteringChain(context: BaseAudioContext, destination: AudioNode, options: MasteringOptions) {
+  const { preset, enhanceLevel, denoiseLevel, sibilanceLevel, roomTreatmentLevel, reverbLevel = 0 } = options;
+  
+  const input = context.createGain();
+  let current: AudioNode = input;
+  
+  // 1. Enhanced Denoise Logic (Gates/Filters)
+  if (denoiseLevel > 0) {
+      const highPass = context.createBiquadFilter();
+      highPass.type = 'highpass';
+      highPass.frequency.value = 70 + (denoiseLevel * 130); 
+      highPass.Q.value = 0.6;
+      current.connect(highPass);
+      current = highPass;
+
+      const highShelfHiss = context.createBiquadFilter();
+      highShelfHiss.type = 'highshelf';
+      highShelfHiss.frequency.value = 5000; 
+      highShelfHiss.gain.value = -(Math.pow(denoiseLevel, 0.7) * 18);
+      current.connect(highShelfHiss);
+      current = highShelfHiss;
+
+      if (denoiseLevel > 0.3) {
+          const lowPass = context.createBiquadFilter();
+          lowPass.type = 'lowpass';
+          const t = (denoiseLevel - 0.3) / 0.7; 
+          const cutFreq = 18000 - (t * 14000); 
+          lowPass.frequency.value = Math.max(4000, cutFreq);
+          lowPass.Q.value = 0.5;
+          current.connect(lowPass);
+          current = lowPass;
+      }
+  }
+
+  // 2. Room Treatment (De-Box / Acoustic Fix / De-Reverb)
+  // Simulates a treated room by removing boxy frequencies (300-500Hz) and tightening low-mids
+  if (roomTreatmentLevel > 0) {
+     const deBoxFilter = context.createBiquadFilter();
+     deBoxFilter.type = 'peaking';
+     deBoxFilter.frequency.value = 400; // Center of boxiness
+     deBoxFilter.Q.value = 1.2;
+     // Cut up to 12dB based on level
+     deBoxFilter.gain.value = -(roomTreatmentLevel * 12); 
+     
+     current.connect(deBoxFilter);
+     current = deBoxFilter;
+
+     const mudFilter = context.createBiquadFilter();
+     mudFilter.type = 'peaking';
+     mudFilter.frequency.value = 200;
+     mudFilter.Q.value = 1.0;
+     mudFilter.gain.value = -(roomTreatmentLevel * 6);
+     
+     current.connect(mudFilter);
+     current = mudFilter;
+  }
+
+  // 3. IMPROVED De-Esser (Sibilance Control)
+  // Now uses a Dual-Stage approach: 
+  // 1. Harsh notch at 7.5kHz
+  // 2. Gentle shelf at 10kHz+
+  if (sibilanceLevel > 0) {
+      // Stage A: Target the sharp "S" sound
+      const deEsserTarget = context.createBiquadFilter();
+      deEsserTarget.type = 'peaking';
+      deEsserTarget.frequency.value = 7500;
+      deEsserTarget.Q.value = 2.5; 
+      // More aggressive cut based on request (up to -24dB)
+      deEsserTarget.gain.value = -(sibilanceLevel * 24); 
+      
+      current.connect(deEsserTarget);
+      current = deEsserTarget;
+
+      // Stage B: Soften the high end generally if sibilance is very high
+      if (sibilanceLevel > 0.3) {
+          const deEsserSoften = context.createBiquadFilter();
+          deEsserSoften.type = 'highshelf';
+          deEsserSoften.frequency.value = 10000;
+          deEsserSoften.gain.value = -(sibilanceLevel * 6); // Subtle roll-off
+          
+          current.connect(deEsserSoften);
+          current = deEsserSoften;
+      }
+  }
+  
+  // 4. Equalization (Tone Shaping)
+  const lowShelf = context.createBiquadFilter();
+  lowShelf.type = 'lowshelf';
+  lowShelf.frequency.value = 100;
+  
+  const highShelf = context.createBiquadFilter();
+  highShelf.type = 'highshelf';
+  highShelf.frequency.value = 8000;
+  
+  const midPeaking = context.createBiquadFilter();
+  midPeaking.type = 'peaking';
+  midPeaking.frequency.value = 2500;
+  midPeaking.Q.value = 1.0;
+
+  const boost = enhanceLevel * 6; 
+
+  if (preset === 'music') {
+      // ORCHESTRAL / MODERN NATURAL
+      // 1. Sub-bass foundation (Deep & Controlled) - Lower freq, moderate gain
+      lowShelf.frequency.value = 60; 
+      lowShelf.gain.value = boost * 0.6; // Deep warmth without mid-bass mud
+
+      // 2. Air/Openness (Agudos suaves e arejados) - High freq for "Air" not "Fizz"
+      highShelf.frequency.value = 12000; 
+      highShelf.gain.value = boost * 0.6; 
+
+      // 3. Mids (Ricos em detalhes) 
+      // Gentle cut in low-mids to unmask details, rather than scooping the presence
+      midPeaking.frequency.value = 300;
+      midPeaking.gain.value = -(boost * 0.2); // Very subtle un-mudding
+      midPeaking.Q.value = 0.8;
+
+  } else if (preset === 'podcast') {
+      lowShelf.gain.value = boost * 0.5;
+      highShelf.gain.value = boost * 0.5;
+      midPeaking.gain.value = boost * 0.5; 
+  } else if (preset === 'narration') {
+      // WARMER NARRATION LOGIC
+      // Increase low shelf frequency slightly to cover "chest" voice (around 120-140Hz)
+      lowShelf.frequency.value = 120;
+      // Boost lows significantly for warmth
+      lowShelf.gain.value = boost * 1.6; 
+      
+      // Reduce highs to remove "digital" feel
+      highShelf.gain.value = boost * 0.1;
+      
+      // Shift Mid down slightly and reduce gain for a smoother, less piercing body
+      midPeaking.frequency.value = 2000;
+      midPeaking.gain.value = boost * 0.6; 
+  }
+  
+  current.connect(lowShelf);
+  lowShelf.connect(highShelf);
+  highShelf.connect(midPeaking);
+  current = midPeaking;
+  
+  // 5. Dynamics (Compression)
+  const compressor = context.createDynamicsCompressor();
+  if (preset === 'music') {
+      // Transparent, Gluelike Compression (Modern/Orchestral)
+      compressor.threshold.value = -14; // Higher threshold preserves dynamics
+      compressor.knee.value = 15;       // Soft knee
+      compressor.ratio.value = 1.5 + (enhanceLevel * 1.5); // Low ratio (1.5:1 to 3:1)
+      compressor.attack.value = 0.05;   // Slow attack (50ms) to preserve transients
+      compressor.release.value = 0.2;   // Natural release
+  } else {
+      compressor.threshold.value = -18;
+      compressor.knee.value = 10;
+      compressor.ratio.value = 4 + (enhanceLevel * 12); 
+      compressor.attack.value = 0.002;
+      compressor.release.value = 0.15;
+  }
+  current.connect(compressor);
+  current = compressor;
+  
+  // 6. Limiter / Makeup Gain
+  const makeupGain = context.createGain();
+  makeupGain.gain.value = 1 + (enhanceLevel * 0.6); 
+  current.connect(makeupGain);
+  
+  // 7. NEW: Reverb / Echo (Parallel processing)
+  if (reverbLevel > 0) {
+      const convolver = context.createConvolver();
+      // Generate a nice studio room impulse (1.5s duration)
+      convolver.buffer = createReverbImpulse(context, 1.5, 3.0);
+      
+      const reverbGain = context.createGain();
+      // Scale logarithmic-ish for better control
+      reverbGain.gain.value = reverbLevel * 0.6; 
+
+      // Connect Mix: Makeup -> Convolver -> ReverbGain -> Dest
+      makeupGain.connect(convolver);
+      convolver.connect(reverbGain);
+      reverbGain.connect(destination);
+  }
+
+  // Dry signal always goes to destination
+  makeupGain.connect(destination);
+  
+  return input;
+}
+
+export async function masterAudio(buffer: AudioBuffer, options: MasteringOptions): Promise<AudioBuffer> {
+   const offlineCtx = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+   
+   const source = offlineCtx.createBufferSource();
+   source.buffer = buffer;
+   
+   const chainInput = createMasteringChain(offlineCtx, offlineCtx.destination, options);
+   source.connect(chainInput);
+   
+   source.start();
+   return await offlineCtx.startRendering();
+}
+
+export function createPreviewPlayer(
+    buffer: AudioBuffer, 
+    options: MasteringOptions, 
+    enabled: boolean, 
+    offset: number,
+    onEnded: () => void
+): { stop: () => void, analyser: AnalyserNode, startTime: number } {
+    const context = getAudioContext();
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    
+    // Create Analyser with faster smoothing for better visual sync
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048; // Increased from 256 for smooth curves
+    analyser.smoothingTimeConstant = 0.8; // Smoother movement
+    
+    if (enabled) {
+        // Chain: Source -> MasterChain -> Analyser -> Destination
+        const chainInput = createMasteringChain(context, analyser, options);
+        source.connect(chainInput);
+    } else {
+        // Chain: Source -> Analyser -> Destination
+        source.connect(analyser);
+    }
+    
+    analyser.connect(context.destination);
+    
+    source.onended = onEnded;
+    
+    // Safety check for offset
+    const safeOffset = Math.min(offset, buffer.duration);
+    
+    // Precision Scheduling
+    const startTime = context.currentTime + 0.01;
+    source.start(startTime, safeOffset);
+    
+    return {
+        stop: () => {
+            source.onended = null;
+            try { source.stop(); } catch(e) {}
+            source.disconnect();
+        },
+        analyser,
+        startTime // Return the exact scheduled start time
+    };
 }
