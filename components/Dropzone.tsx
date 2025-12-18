@@ -10,6 +10,21 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Expanded list of accepted formats to help mobile OS recognition
+  const acceptedFormats = "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma";
+
+  const isValidAudioFile = (file: File) => {
+    // Check by MIME type
+    if (file.type && file.type.startsWith('audio/')) return true;
+    
+    // Fallback: check by extension (crucial for some mobile browsers)
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const commonAudioExtensions = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'wma', 'm4r'];
+    if (extension && commonAudioExtensions.includes(extension)) return true;
+    
+    return false;
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(true);
@@ -24,17 +39,22 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
     setIsDragOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
-      if (file.type.startsWith('audio/')) {
+      if (isValidAudioFile(file)) {
         onFileSelect(file);
       } else {
-        alert('Por favor, carregue apenas arquivos de áudio.');
+        alert('Por favor, carregue apenas arquivos de áudio (MP3, WAV, etc).');
       }
     }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      onFileSelect(e.target.files[0]);
+      const file = e.target.files[0];
+      if (isValidAudioFile(file)) {
+        onFileSelect(file);
+      } else {
+        alert('Arquivo não reconhecido como áudio. Tente um formato comum como MP3 ou WAV.');
+      }
     }
   };
 
@@ -58,7 +78,7 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
       <input
         ref={inputRef}
         type="file"
-        accept="audio/*"
+        accept={acceptedFormats}
         className="hidden"
         onChange={handleChange}
         disabled={isProcessing}
@@ -83,7 +103,7 @@ const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, isProcessing }) => {
           <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xs mx-auto">
             {isProcessing 
               ? 'Isso pode levar alguns segundos dependendo do tamanho.' 
-              : 'Arraste e solte ou clique para selecionar (MP3, WAV, AAC)'
+              : 'Clique aqui ou arraste seu MP3/WAV'
             }
           </p>
         </div>
